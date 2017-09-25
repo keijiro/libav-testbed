@@ -1,0 +1,4 @@
+*.swp
+*.o
+encode
+test.mp4
