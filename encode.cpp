@@ -77,9 +77,17 @@ int main()
     // Encode and write frames.
     for (auto i = 0; i < kDuration; i++)
     {
+        size_t offs = 0;
+
         for (auto y = 0; y < kHeight; y++)
-            for (auto x = 0; x < tmp_frame->linesize[0]; x++)
-                tmp_frame->data[0][y * tmp_frame->linesize[0] + x] = x + y + i * 3;
+        {
+            for (auto x = 0; x < kWidth; x++)
+            {
+                tmp_frame->data[0][offs++] = x * 8 + i * 8;
+                tmp_frame->data[0][offs++] = y * 8 + i * 8;
+                tmp_frame->data[0][offs++] = i * 8;
+            }
+        }
 
         // Pixel format conversion
         sws_scale(converter, tmp_frame->data, tmp_frame->linesize, 0, kHeight, out_frame->data, out_frame->linesize);
