@@ -9,118 +9,165 @@ extern "C"
 
 namespace
 {
-    const char* kFilename = "test.mov";
-    const auto kWidth = 1280;
-    const auto kHeight = 720;
-    const auto kPixFormat = AV_PIX_FMT_YUV422P10LE;
-    const auto kDuration = 30 * 2;
+
+    class Encoder
+    {
+    public:
+
+        static void initGlobal()
+        {
+            av_register_all();
+        }
+
+        Encoder(const char* filename, int width, int height, int fps)
+            : frameCount_(0)
+        {
+            const auto kPixFormat = AV_PIX_FMT_YUV422P10LE;
+
+            // Guess the format from the fileame.
+            format_ = avformat_alloc_context();
+            format_->oformat = av_guess_format("mov", nullptr, nullptr);
+            format_->oformat->video_codec = AV_CODEC_ID_PRORES;
+
+            // Open a stream with the codec.
+            auto* encoder = avcodec_find_encoder(format_->oformat->video_codec);
+            stream_ = avformat_new_stream(format_, encoder);
+
+            // Stream setting
+            stream_->time_base.num = 1;
+            stream_->time_base.den = fps;
+
+            // Codec settings
+            auto* codec = stream_->codec;
+            avcodec_get_context_defaults3(codec, codec->codec);
+            codec->width = width;
+            codec->height = height;
+            codec->pix_fmt = kPixFormat;
+            codec->time_base = stream_->time_base;
+            codec->flags |= CODEC_FLAG_GLOBAL_HEADER;
+
+            // Open the output stream.
+            if (avcodec_open2(codec, nullptr, nullptr) < 0) abort();
+            if (avio_open(&format_->pb, filename, AVIO_FLAG_WRITE) < 0) abort();
+            avformat_write_header(format_, nullptr);
+            av_dump_format(format_, 0, filename, 1);
+
+            // Allocate temp/output frame buffers.
+            const auto tmp_pix_format = AV_PIX_FMT_RGB24;
+            const auto out_pix_format = kPixFormat;
+
+            tmpFrame_ = av_frame_alloc();
+            outFrame_ = av_frame_alloc();
+
+            tmpFrame_->width  = outFrame_->width  = width;
+            tmpFrame_->height = outFrame_->height = height;
+
+            tmpFrame_->format = tmp_pix_format;
+            outFrame_->format = out_pix_format;
+
+            auto* tmp_buffer = reinterpret_cast<uint8_t*>(av_malloc(avpicture_get_size(tmp_pix_format, width, height)));
+            auto* out_buffer = reinterpret_cast<uint8_t*>(av_malloc(avpicture_get_size(out_pix_format, width, height)));
+
+            avpicture_fill(reinterpret_cast<AVPicture*>(tmpFrame_), tmp_buffer, tmp_pix_format, width, height);
+            avpicture_fill(reinterpret_cast<AVPicture*>(outFrame_), out_buffer, out_pix_format, width, height);
+
+            // Pixel format conversion context
+            converter_ = sws_getContext(
+                width, height, tmp_pix_format,
+                width, height, out_pix_format,
+                SWS_POINT, nullptr, nullptr, nullptr
+            );
+        }
+
+        uint8_t* getRGBFrameBuffer() const
+        {
+            return tmpFrame_->data[0];
+        }
+
+        void processFrame()
+        {
+            // Pixel format conversion
+            sws_scale(
+                converter_,
+                tmpFrame_->data, tmpFrame_->linesize, 0, tmpFrame_->height,
+                outFrame_->data, outFrame_->linesize
+            );
+
+            // Encode the frame.
+            AVPacket packet = { 0 };
+            av_init_packet(&packet);
+
+            int got;
+            avcodec_encode_video2(stream_->codec, &packet, outFrame_, &got);
+
+            // Write the enocder output.
+            if (got > 0)
+            {
+                packet.pts = packet.dts = av_rescale_q(frameCount_, stream_->codec->time_base, stream_->time_base);
+                packet.stream_index = stream_->index;
+                av_interleaved_write_frame(format_, &packet);
+            }
+
+            av_free_packet(&packet);
+
+            frameCount_++;
+        }
+
+        void close()
+        {
+            av_write_trailer(format_);
+        }
+
+        ~Encoder()
+        {
+            av_free(tmpFrame_->data[0]);
+            av_free(outFrame_->data[0]);
+            av_free(tmpFrame_);
+            av_free(outFrame_);
+            avcodec_close(stream_->codec);
+            avio_close(format_->pb);
+            av_free(format_);
+        }
+
+    private:
+
+        AVFormatContext* format_;
+        AVStream* stream_;
+        AVFrame* tmpFrame_;
+        AVFrame* outFrame_;
+        SwsContext* converter_;
+        int frameCount_;
+    };
 }
+
 
 int main()
 {
-    av_register_all();
+    const auto kWidth = 800;
+    const auto kHeight = 480;
 
-    // Guess the format from the fileame.
-    auto* format = avformat_alloc_context();
-    format->oformat = av_guess_format(nullptr, kFilename, nullptr);
-    format->oformat->video_codec = AV_CODEC_ID_PRORES;
+    Encoder::initGlobal();
 
-    // Open a stream with the codec.
-    auto* encoder = avcodec_find_encoder(format->oformat->video_codec);
-    auto* stream = avformat_new_stream(format, encoder);
+    Encoder encoder("test.mov", kWidth, kHeight, 30);
 
-    // 30 fps
-    stream->time_base.num = 1;
-    stream->time_base.den = 30;
-
-    // Codec settings
-    auto* codec = stream->codec;
-    avcodec_get_context_defaults3(codec, codec->codec);
-    codec->width = kWidth;
-    codec->height = kHeight;
-    codec->pix_fmt = kPixFormat;
-    codec->time_base = stream->time_base;
-    codec->flags |= CODEC_FLAG_GLOBAL_HEADER;
-
-    // Open the output stream.
-    if (avcodec_open2(codec, nullptr, nullptr) < 0) abort();
-    if (avio_open(&format->pb, kFilename, AVIO_FLAG_WRITE) < 0) abort();
-    avformat_write_header(format, nullptr);
-    av_dump_format(format, 0, kFilename, 1);
-
-    // Allocate temp/output frame buffers.
-    const auto tmp_pix_format = AV_PIX_FMT_RGB24;
-    const auto out_pix_format = kPixFormat;
-
-    auto* tmp_frame = av_frame_alloc();
-    auto* out_frame = av_frame_alloc();
-
-    tmp_frame->width  = out_frame->width  = kWidth;
-    tmp_frame->height = out_frame->height = kHeight;
-
-    tmp_frame->format = tmp_pix_format;
-    out_frame->format = out_pix_format;
-
-    auto* tmp_buffer = reinterpret_cast<uint8_t*>(av_malloc(avpicture_get_size(tmp_pix_format, kWidth, kHeight)));
-    auto* out_buffer = reinterpret_cast<uint8_t*>(av_malloc(avpicture_get_size(out_pix_format, kWidth, kHeight)));
-
-    avpicture_fill(reinterpret_cast<AVPicture*>(tmp_frame), tmp_buffer, tmp_pix_format, kWidth, kHeight);
-    avpicture_fill(reinterpret_cast<AVPicture*>(out_frame), out_buffer, out_pix_format, kWidth, kHeight);
-
-    // Pixel format conversion context
-    auto* converter = sws_getContext(
-        kWidth, kHeight, tmp_pix_format,
-        kWidth, kHeight, out_pix_format,
-        SWS_POINT, nullptr, nullptr, nullptr
-    );
-
-    // Encode and write frames.
-    for (auto i = 0; i < kDuration; i++)
+    for (auto i = 0; i < 100; i++)
     {
-        size_t offs = 0;
+        auto* p = encoder.getRGBFrameBuffer();
 
         for (auto y = 0; y < kHeight; y++)
         {
             for (auto x = 0; x < kWidth; x++)
             {
-                tmp_frame->data[0][offs++] = x * 8 + i * 8;
-                tmp_frame->data[0][offs++] = y * 8 + i * 8;
-                tmp_frame->data[0][offs++] = i * 8;
+                *p++ = x * 8 + i * 8;
+                *p++ = y * 8 + i * 8;
+                *p++ = i * 8;
             }
         }
 
-        // Pixel format conversion
-        sws_scale(converter, tmp_frame->data, tmp_frame->linesize, 0, kHeight, out_frame->data, out_frame->linesize);
-
-        // Encode the frame.
-        AVPacket packet = { 0 };
-        av_init_packet(&packet);
-
-        int got;
-        avcodec_encode_video2(codec, &packet, out_frame, &got);
-
-        // Write the enocder output.
-        if (got > 0)
-        {
-            packet.pts = packet.dts = av_rescale_q(i, codec->time_base, stream->time_base);
-            packet.stream_index = stream->index;
-            av_interleaved_write_frame(format, &packet);
-        }
-
-        av_free_packet(&packet);
+        encoder.processFrame();
     }
 
-    // terminate the stream.
-    av_write_trailer(format);
-
-    // Release all the resources.
-    av_free(tmp_frame->data[0]);
-    av_free(out_frame->data[0]);
-    av_free(tmp_frame);
-    av_free(out_frame);
-    avcodec_close(stream->codec);
-    avio_close(format->pb);
-    av_free(format);
+    encoder.close();
 
     return 0;
 }
