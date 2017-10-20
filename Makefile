@@ -1,4 +1,4 @@
-SRCS=encode.cpp
+SRCS=main.cpp
 OBJS=$(SRCS:.cpp=.o)
 OUTPUT=encode
 CXXFLAGS=-I. -O2 -Wall -std=c++11
@@ -9,7 +9,7 @@ CXX=g++
 all: $(OUTPUT)
 
 clean:
-	rm -f $(OUTPUT) $(OBJS)
+	rm -f $(OUTPUT) $(OBJS) test.mov
 
 $(OUTPUT): $(OBJS)
 	$(CXX) $(LDFLAGS) -o $(OUTPUT) $(OBJS) $(LIBS)

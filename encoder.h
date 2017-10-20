@@ -7,9 +7,8 @@ extern "C"
     #include <libswscale/swscale.h>
 }
 
-namespace
+namespace avtest
 {
-
     class Encoder
     {
     public:
@@ -20,20 +19,19 @@ namespace
         }
 
         Encoder(const char* filename, int width, int height, int fps)
-            : frameCount_(0)
         {
             const auto kPixFormat = AV_PIX_FMT_YUV422P10LE;
 
-            // Guess the format from the fileame.
+            // Output stream formart: Qicktime (mov) with ProRes codec
             format_ = avformat_alloc_context();
             format_->oformat = av_guess_format("mov", nullptr, nullptr);
             format_->oformat->video_codec = AV_CODEC_ID_PRORES;
 
-            // Open a stream with the codec.
+            // Open a new stream with the codec.
             auto* encoder = avcodec_find_encoder(format_->oformat->video_codec);
             stream_ = avformat_new_stream(format_, encoder);
 
-            // Stream setting
+            // Stream settings
             stream_->time_base.num = 1;
             stream_->time_base.den = fps;
 
@@ -77,6 +75,8 @@ namespace
                 width, height, out_pix_format,
                 SWS_POINT, nullptr, nullptr, nullptr
             );
+
+            frameCount_ = 0;
         }
 
         uint8_t* getRGBFrameBuffer() const
@@ -100,9 +100,9 @@ namespace
             int got;
             avcodec_encode_video2(stream_->codec, &packet, outFrame_, &got);
 
-            // Write the enocder output.
             if (got > 0)
             {
+                // Encoder output
                 packet.pts = packet.dts = av_rescale_q(frameCount_, stream_->codec->time_base, stream_->time_base);
                 packet.stream_index = stream_->index;
                 av_interleaved_write_frame(format_, &packet);
@@ -138,36 +138,4 @@ namespace
         SwsContext* converter_;
         int frameCount_;
     };
-}
-
-
-int main()
-{
-    const auto kWidth = 800;
-    const auto kHeight = 480;
-
-    Encoder::initGlobal();
-
-    Encoder encoder("test.mov", kWidth, kHeight, 30);
-
-    for (auto i = 0; i < 100; i++)
-    {
-        auto* p = encoder.getRGBFrameBuffer();
-
-        for (auto y = 0; y < kHeight; y++)
-        {
-            for (auto x = 0; x < kWidth; x++)
-            {
-                *p++ = x * 8 + i * 8;
-                *p++ = y * 8 + i * 8;
-                *p++ = i * 8;
-            }
-        }
-
-        encoder.processFrame();
-    }
-
-    encoder.close();
-
-    return 0;
 }
